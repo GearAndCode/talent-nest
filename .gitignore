@@ -1,0 +1,21 @@
+# Backend secrets
+backend/.env
+
+# Python cache
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+*.pyc
+
+# Generated/runtime files
+backend/uploads/
+backend/*.dump
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# General
+.DS_Store
+*.log
