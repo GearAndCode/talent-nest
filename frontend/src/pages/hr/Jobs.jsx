@@ -3,19 +3,20 @@ import axios from 'axios';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast, { Toaster } from 'react-hot-toast';
-import API_BASE_URL_CONFIG from "../../services/api";
 import {
   Plus, Search, Eye, Pencil, Trash2, X, MapPin, Briefcase, Building2,
   DollarSign, Calendar, GraduationCap, Tag, AlertTriangle, XCircle,
-  ChevronDown, RefreshCw, LayoutDashboard, Users, FileText, Award,
+  ChevronDown, RefreshCw, LayoutDashboard, Users, FileText, Award, CreditCard,
   BarChart3, Settings, LogOut, Bell, ChevronLeft, ChevronRight,
-  Menu, UserCircle, BrainCircuit,
+  Menu, UserCircle, BrainCircuit, Lock,
 } from 'lucide-react';
+import { getPlanLimitInfo } from '../../services/subscriptionService';
 
 // ==========================================
 // AXIOS CLIENT (unchanged — matches existing project config)
 // ==========================================
-const API_BASE_URL = API_BASE_URL_CONFIG;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
@@ -24,7 +25,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token');
+  const token = localStorage.getItem('access_token') || localStorage.getItem('token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -121,6 +122,7 @@ const NAV_ITEMS = [
   { label: 'Candidates', icon: Users, path: '/candidates' },
   { label: 'AI Analysis', icon: BrainCircuit, path: '/ai-analysis' },
   { label: 'AI Rankings', icon: Award, path: '/ai-rankings' },
+  { label: 'Billing', icon: CreditCard, path: '/subscription' },
 
 ];
 
@@ -136,7 +138,7 @@ export default function Jobs() {
   const [searchQuery, setSearchQuery] = useState('');
 
   const hrIdentity = useMemo(() => {
-    const token = localStorage.getItem('access_token');
+    const token = localStorage.getItem('access_token') || localStorage.getItem('token');
     const payload = token ? decodeJwtPayload(token) : null;
     const email = payload?.email || localStorage.getItem('hr_email') || '';
     const namePart = email.includes('@') ? email.split('@')[0] : email;
@@ -162,7 +164,7 @@ export default function Jobs() {
   );
 
   const handleLogout = useCallback(() => {
-    localStorage.removeItem('access_token');
+    localStorage.removeItem('token');
     toast.success('Logged out successfully');
     navigate('/hr-login');
   }, [navigate]);
@@ -761,6 +763,7 @@ function JobsTable({ jobs, onView, onEdit, onDelete }) {
 // CREATE / EDIT MODAL
 // ==========================================
 function JobFormModal({ job, api, onClose, onSaved }) {
+  const navigate = useNavigate();
   const isEditing = Boolean(job);
   const [formData, setFormData] = useState(() =>
     job
@@ -781,6 +784,11 @@ function JobFormModal({ job, api, onClose, onSaved }) {
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // Separate from submitError: set only when the backend rejects the
+  // request with 402 (plan/job limit reached) rather than a genuine
+  // error, so we can render the "Upgrade Plan" CTA instead of the
+  // generic failure message.
+  const [planLimitInfo, setPlanLimitInfo] = useState(null);
 
   const update = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -815,6 +823,7 @@ function JobFormModal({ job, api, onClose, onSaved }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSubmitError(null);
+    setPlanLimitInfo(null);
     if (!validate()) return;
 
     const payload = {
@@ -840,14 +849,26 @@ function JobFormModal({ job, api, onClose, onSaved }) {
       }
       onSaved();
     } catch (err) {
-      const detail = err.response?.data?.detail;
-      setSubmitError(
-        typeof detail === 'string'
-          ? detail
-          : Array.isArray(detail)
-          ? detail.map((d) => d.msg).join(', ')
-          : 'Failed to save job. Please try again.'
-      );
+      // A 402 here means the backend blocked job creation because the
+      // company's plan has reached its active-job limit (see
+      // enforce_active_job_limit in backend/app/auth/plan_access.py) -
+      // this is NOT a genuine save failure, so it gets its own
+      // "upgrade your plan" UI instead of the generic error message.
+      // The job is never created in this case (the request never
+      // succeeded), so no further action is needed to prevent creation.
+      const limitInfo = getPlanLimitInfo(err);
+      if (limitInfo) {
+        setPlanLimitInfo(limitInfo);
+      } else {
+        const detail = err.response?.data?.detail;
+        setSubmitError(
+          typeof detail === 'string'
+            ? detail
+            : Array.isArray(detail)
+            ? detail.map((d) => d.msg).join(', ')
+            : 'Failed to save job. Please try again.'
+        );
+      }
     } finally {
       setSubmitting(false);
     }
@@ -871,6 +892,22 @@ function JobFormModal({ job, api, onClose, onSaved }) {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {planLimitInfo && (
+            <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium flex items-start gap-3">
+              <Lock size={16} className="shrink-0 mt-0.5" />
+              <div className="flex-1 space-y-2">
+                <p>{planLimitInfo.message}</p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/plans')}
+                  className="inline-flex items-center px-4 py-2 rounded-xl bg-[#0F766E] text-white text-xs font-semibold hover:bg-[#0D9488] transition-colors"
+                >
+                  Upgrade Plan
+                </button>
+              </div>
+            </div>
+          )}
+
           {submitError && (
             <div className="p-3 rounded-2xl bg-rose-50 border border-rose-100 text-rose-700 text-xs font-medium">
               {submitError}

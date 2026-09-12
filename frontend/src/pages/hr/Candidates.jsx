@@ -3,12 +3,14 @@ import axios from 'axios';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast, { Toaster } from 'react-hot-toast';
+import useEntitlements from '../../hooks/useEntitlements';
+import PremiumFeatureLock from '../../components/hr/PremiumFeatureLock';
 import {
   Search, RefreshCw, Eye, FileText, X, ChevronDown, ChevronRight, ChevronLeft,
-  Briefcase, Users, Award, BarChart3, Settings, LogOut, Bell,
+  Briefcase, Users, Award, CreditCard, BarChart3, Settings, LogOut, Bell,
   Menu, UserCircle, BrainCircuit, LayoutDashboard, Building2, Mail, Phone,
   Calendar, TrendingUp, FileWarning, CheckCircle2, Circle, ArrowUpDown,
-  Download, ClipboardList, MailX, Inbox,
+  Download, ClipboardList, MailX, Inbox, Lock,
 } from 'lucide-react';
 
 /* ============================================================
@@ -110,6 +112,7 @@ const NAV_ITEMS = [
   { label: 'Candidates', icon: Users, path: '/candidates' },
   { label: 'AI Analysis', icon: BrainCircuit, path: '/ai-analysis' },
   { label: 'AI Rankings', icon: Award, path: '/ai-rankings' },
+  { label: 'Billing', icon: CreditCard, path: '/subscription' },
   
 ];
 
@@ -477,6 +480,9 @@ function TopNavbar({ hrIdentity, searchQuery, setSearchQuery, onMenuClick, onLog
    CANDIDATES CONTENT — the actual page
    ============================================================ */
 function CandidatesContent() {
+  const { hasFeature } = useEntitlements();
+  const hasRanking = hasFeature('ai_candidate_ranking_enabled');
+  const hasResumeAnalysis = hasFeature('ai_resume_analysis_enabled');
   const [candidates, setCandidates] = useState([]);
   const [applications, setApplications] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -546,7 +552,13 @@ function CandidatesContent() {
     () =>
       candidates.map((c) => {
         const apps = applicationsByCandidate[c.id] || [];
-        const scores = apps.filter((a) => typeof a.match_score === 'number').map((a) => a.match_score);
+        // When AI candidate ranking isn't part of the plan, the backend
+        // masks match_score to a literal 0 (see
+        // _mask_ai_fields_if_unentitled) - treat that as "no data" here
+        // rather than computing/displaying a fake best score.
+        const scores = hasRanking
+          ? apps.filter((a) => typeof a.match_score === 'number').map((a) => a.match_score)
+          : [];
         const bestMatchScore = scores.length ? Math.max(...scores) : null;
         const latestApp = apps.length
           ? [...apps].sort((a, b) => new Date(b.applied_at || 0) - new Date(a.applied_at || 0))[0]
@@ -559,7 +571,7 @@ function CandidatesContent() {
           latestStatus: latestApp?.status || null,
         };
       }),
-    [candidates, applicationsByCandidate]
+    [candidates, applicationsByCandidate, hasRanking]
   );
 
   /* ---------------- FILTER OPTIONS (derived from real data) ---------------- */
@@ -737,6 +749,7 @@ function CandidatesContent() {
           onView={setViewingCandidate}
           onOpenResume={handleOpenResume}
           onEmail={handleEmailCandidate}
+          hasRanking={hasRanking}
         />
       )}
 
@@ -748,6 +761,8 @@ function CandidatesContent() {
             onClose={() => setViewingCandidate(null)}
             onOpenResume={handleOpenResume}
             onEmail={handleEmailCandidate}
+            hasRanking={hasRanking}
+            hasResumeAnalysis={hasResumeAnalysis}
           />
         )}
       </AnimatePresence>
@@ -790,7 +805,20 @@ function FilterSelect({ value, onChange, options, placeholder, raw, icon: Icon }
 /* ============================================================
    CANDIDATES TABLE
    ============================================================ */
-function CandidatesTable({ candidates, onView, onOpenResume, onEmail }) {
+function CandidateLockedBadge({ label = "Upgrade" }) {
+  const navigate = useNavigate();
+  return (
+    <button
+      onClick={() => navigate('/plans')}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F766E] bg-[#0F766E]/10 hover:bg-[#0F766E]/20 px-2 py-1 rounded-full transition-colors"
+      title="Upgrade to unlock AI match scores"
+    >
+      <Lock size={11} /> {label}
+    </button>
+  );
+}
+
+function CandidatesTable({ candidates, onView, onOpenResume, onEmail, hasRanking }) {
   return (
     <div className="bg-white rounded-3xl border border-[#E2E8F0] shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
@@ -839,7 +867,9 @@ function CandidatesTable({ candidates, onView, onOpenResume, onEmail }) {
                 </td>
                 <td className="px-6 py-4 text-[#0F172A] font-medium">{c.applicationsCount}</td>
                 <td className="px-6 py-4">
-                  {typeof c.bestMatchScore === 'number' ? (
+                  {!hasRanking ? (
+                    <CandidateLockedBadge />
+                  ) : typeof c.bestMatchScore === 'number' ? (
                     <span className="font-bold" style={{ color: matchScoreColor(c.bestMatchScore) }}>
                       {c.bestMatchScore}%
                     </span>
@@ -896,7 +926,7 @@ function ActionIcon({ children, onClick, label, disabled }) {
 /* ============================================================
    VIEW DRAWER
    ============================================================ */
-function CandidateDrawer({ candidate, onClose, onOpenResume, onEmail }) {
+function CandidateDrawer({ candidate, onClose, onOpenResume, onEmail, hasRanking, hasResumeAnalysis }) {
   const c = candidate;
 
   return (
@@ -940,7 +970,9 @@ function CandidateDrawer({ candidate, onClose, onOpenResume, onEmail }) {
             </div>
             <div className="bg-[#F8FAFC] rounded-2xl border border-[#E2E8F0] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-[#475569] mb-2">Best Match Score</p>
-              {typeof c.bestMatchScore === 'number' ? (
+              {!hasRanking ? (
+                <CandidateLockedBadge label="Upgrade to unlock" />
+              ) : typeof c.bestMatchScore === 'number' ? (
                 <div>
                   <span className="text-2xl font-bold" style={{ color: matchScoreColor(c.bestMatchScore) }}>
                     {c.bestMatchScore}%
@@ -991,7 +1023,7 @@ function CandidateDrawer({ candidate, onClose, onOpenResume, onEmail }) {
                 {[...c.applications]
                   .sort((a, b) => new Date(b.applied_at || 0) - new Date(a.applied_at || 0))
                   .map((app) => (
-                    <ApplicationCard key={app.id} app={app} />
+                    <ApplicationCard key={app.id} app={app} hasRanking={hasRanking} hasResumeAnalysis={hasResumeAnalysis} />
                   ))}
               </div>
             )}
@@ -1021,7 +1053,7 @@ function CandidateDrawer({ candidate, onClose, onOpenResume, onEmail }) {
   );
 }
 
-function ApplicationCard({ app }) {
+function ApplicationCard({ app, hasRanking, hasResumeAnalysis }) {
   const matchedSkills = splitSkills(app.matched_skills);
   const missingSkills = splitSkills(app.missing_skills);
 
@@ -1038,7 +1070,9 @@ function ApplicationCard({ app }) {
         <StatusBadge status={app.status} />
       </div>
 
-      {typeof app.match_score === 'number' && (
+      {!hasRanking ? (
+        <CandidateLockedBadge label="Upgrade to see match" />
+      ) : typeof app.match_score === 'number' && (
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold" style={{ color: matchScoreColor(app.match_score) }}>
             {app.match_score}% Match
@@ -1052,7 +1086,7 @@ function ApplicationCard({ app }) {
         </div>
       )}
 
-      {matchedSkills.length > 0 && (
+      {hasResumeAnalysis && matchedSkills.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {matchedSkills.slice(0, 6).map((skill) => (
             <span key={skill} className="text-[11px] font-medium text-[#0F766E] bg-[#14B8A6]/10 px-2 py-0.5 rounded-full">
@@ -1062,7 +1096,7 @@ function ApplicationCard({ app }) {
         </div>
       )}
 
-      {missingSkills.length > 0 && (
+      {hasResumeAnalysis && missingSkills.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {missingSkills.slice(0, 6).map((skill) => (
             <span key={skill} className="text-[11px] font-medium text-[#EF4444] bg-[#EF4444]/10 px-2 py-0.5 rounded-full">
@@ -1072,7 +1106,7 @@ function ApplicationCard({ app }) {
         </div>
       )}
 
-      {app.ai_recommendation && (
+      {hasResumeAnalysis && app.ai_recommendation && (
         <div className="flex items-start gap-1.5 text-xs text-[#0F172A]">
           <TrendingUp size={13} className="text-[#0F766E] mt-0.5 shrink-0" />
           <span>{app.ai_recommendation}</span>

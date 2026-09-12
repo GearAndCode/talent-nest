@@ -3,6 +3,14 @@ import { useNavigate, useLocation } from "react-router-dom";
 import axios from "axios";
 import { motion, AnimatePresence } from "framer-motion";
 import toast, { Toaster } from "react-hot-toast";
+import PremiumFeatureLock from "../../components/hr/PremiumFeatureLock";
+
+// True when the backend rejected the request with 402 Payment Required
+// (see app.auth.plan_access.require_feature) - i.e. the calling company's
+// plan doesn't include this feature, as opposed to a real error.
+function isLockedError(err) {
+  return err?.response?.status === 402;
+}
 import {
   BarChart,
   Bar,
@@ -23,6 +31,7 @@ import {
   Users,
   BrainCircuit,
   Award,
+  CreditCard,
   BarChart3,
   Building2,
   Settings,
@@ -142,8 +151,11 @@ function mapErrorMessage(err, fallback) {
       ? detail
       : Array.isArray(detail)
       ? detail.map((d) => d?.msg || JSON.stringify(d)).join(", ")
+      : detail && typeof detail === "object" && typeof detail.message === "string"
+      ? detail.message
       : null;
 
+  if (status === 402) return detailMsg || "Upgrade your plan to unlock this feature.";
   if (status === 401) return detailMsg || "Your session has expired. Please log in again.";
   if (status === 403) return detailMsg || "You don't have permission to view this data.";
   if (status === 404) return detailMsg || "The requested resource could not be found.";
@@ -229,6 +241,7 @@ const NAV_ITEMS = [
   { label: "Candidates", icon: Users, path: "/candidates" },
   { label: "AI Analysis", icon: BrainCircuit, path: "/ai-analysis" },
   { label: "AI Rankings", icon: Award, path: "/ai-rankings" },
+  { label: "Billing", icon: CreditCard, path: "/subscription" },
 
 ];
 
@@ -555,6 +568,7 @@ function AIAnalysisContent() {
   const [jobs, setJobs] = useState([]);
   const [dashboardStats, setDashboardStats] = useState(null);
   const [matchDistributionRaw, setMatchDistributionRaw] = useState([]);
+  const [matchDistributionLocked, setMatchDistributionLocked] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -606,6 +620,10 @@ function AIAnalysisContent() {
       setMatchDistributionRaw(
         matchDistRes.status === "fulfilled" && Array.isArray(matchDistRes.value.data) ? matchDistRes.value.data : []
       );
+      // A 402 here means the company's plan doesn't include Advanced
+      // Analytics - that's expected, not a load failure, so it must show
+      // a locked/upgrade state rather than an empty chart or a toast.
+      setMatchDistributionLocked(matchDistRes.status === "rejected" && isLockedError(matchDistRes.reason));
 
       if (candidatesRes.status === "rejected") {
         toast.error(mapErrorMessage(candidatesRes.reason, "Unable to load candidate details."));
@@ -616,7 +634,7 @@ function AIAnalysisContent() {
       if (statsRes.status === "rejected") {
         toast.error(mapErrorMessage(statsRes.reason, "Unable to load AI summary stats."));
       }
-      if (matchDistRes.status === "rejected") {
+      if (matchDistRes.status === "rejected" && !isLockedError(matchDistRes.reason)) {
         toast.error(mapErrorMessage(matchDistRes.reason, "Unable to load match distribution."));
       }
     } catch (err) {
@@ -736,10 +754,12 @@ function AIAnalysisContent() {
 
   // ---------------- Chart data ----------------
   const matchDistributionData = useMemo(() => {
-    const source = matchDistributionRaw.length
-      ? matchDistributionRaw.map((d) => d.score)
-      : applications.map((a) => a.match_score);
-    const scores = source.filter((s) => typeof s === "number");
+    // Note: no fallback to `applications[].match_score` here anymore -
+    // for a plan without Advanced Analytics/AI ranking, that field is
+    // masked to 0 by the backend, and charting it would show fake data
+    // instead of the locked state matchDistributionLocked already covers.
+    if (matchDistributionLocked) return [];
+    const scores = matchDistributionRaw.map((d) => d.score).filter((s) => typeof s === "number");
     if (!scores.length) return [];
     return MATCH_BUCKETS.slice()
       .reverse()
@@ -747,7 +767,7 @@ function AIAnalysisContent() {
         range: b.label,
         count: scores.filter((s) => s >= b.min && s <= b.max).length,
       }));
-  }, [matchDistributionRaw, applications]);
+  }, [matchDistributionRaw, matchDistributionLocked]);
 
   const skillGapData = useMemo(() => {
     const freq = {};
@@ -870,8 +890,14 @@ const handleViewResume = useCallback((candidate) => {
               title="Match Distribution"
               subtitle="AI match-score spread across analyzed applications"
               loading={loading}
-              isEmpty={matchDistributionData.length === 0}
+              isEmpty={!matchDistributionLocked && matchDistributionData.length === 0}
             >
+              {matchDistributionLocked ? (
+                <PremiumFeatureLock
+                  title="Advanced Analytics"
+                  description="Upgrade to Professional or Business to see the AI match-score distribution across your applications."
+                />
+              ) : (
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={matchDistributionData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
@@ -884,6 +910,7 @@ const handleViewResume = useCallback((candidate) => {
                   <Bar dataKey="count" fill="#0F766E" radius={[8, 8, 0, 0]} maxBarSize={48} />
                 </BarChart>
               </ResponsiveContainer>
+              )}
             </ChartCard>
 
             <ChartCard
@@ -1087,6 +1114,22 @@ function ScoreCardsSection({ loading, dashboardStats, summary }) {
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="h-28 rounded-[20px] bg-[#E2E8F0]/60 animate-pulse" />
         ))}
+      </div>
+    );
+  }
+
+  // All four of these cards are derived from AI resume analysis / AI
+  // candidate ranking data. When the backend says that's locked, the
+  // underlying fields are masked (match_score zeroed, ai_recommendation
+  // null), so showing them here would be fake data - show a single
+  // upgrade prompt instead.
+  if (dashboardStats?.ai_insights_locked) {
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
+        <PremiumFeatureLock
+          title="AI Resume Analysis & Candidate Ranking"
+          description="Upgrade to Professional or Business to see match scores, high-match candidates, and AI review flags."
+        />
       </div>
     );
   }
@@ -1548,15 +1591,21 @@ function RankingModal({ job, onClose }) {
   const [ranking, setRanking] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [locked, setLocked] = useState(false);
 
   const fetchRanking = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setLocked(false);
     try {
       const res = await api.get(`/applications/jobs/${job.id}/ranked-candidates`);
       setRanking(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
-      setError(mapErrorMessage(err, "Failed to load candidate ranking for this job."));
+      if (isLockedError(err)) {
+        setLocked(true);
+      } else {
+        setError(mapErrorMessage(err, "Failed to load candidate ranking for this job."));
+      }
     } finally {
       setLoading(false);
     }
@@ -1593,6 +1642,11 @@ function RankingModal({ job, onClose }) {
                 <div key={i} className="h-14 rounded-xl bg-[#F8FAFC] animate-pulse" />
               ))}
             </div>
+          ) : locked ? (
+            <PremiumFeatureLock
+              title="AI Candidate Ranking"
+              description="Upgrade to Professional or Business to rank candidates by AI match score for this job."
+            />
           ) : error ? (
             <ErrorState message={error} onRetry={fetchRanking} compact />
           ) : ranking.length === 0 ? (

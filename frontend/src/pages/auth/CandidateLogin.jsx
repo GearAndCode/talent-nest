@@ -1,6 +1,7 @@
 import API_BASE_URL from "../../services/api";
-import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { resolveSafeRedirect } from '../../utilis/safeRedirect';
 import { 
   Mail, 
   Lock, 
@@ -68,37 +69,25 @@ const GoogleIcon = () => (
   </svg>
 );
 
-/**
- * Safely reads a fetch Response body.
- * - Parses JSON when the server actually sent JSON.
- * - Falls back to plain text (wrapped as { detail }) for non-JSON bodies.
- * - Returns null for empty bodies (e.g. some 404/500 responses) instead of
- *   letting response.json() throw "Unexpected end of JSON input".
- */
-async function readResponseBody(response) {
-  const contentType = response.headers.get('content-type') || '';
-
-  if (contentType.includes('application/json')) {
-    const text = await response.text();
-    if (!text) return null;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { detail: text };
-    }
-  }
-
-  const text = await response.text();
-  return text ? { detail: text } : null;
-}
-
-/** True when a fetch() call itself failed (backend unreachable), not an HTTP error. */
-function isNetworkError(error) {
-  return error instanceof TypeError;
-}
-
 export default function CandidateLogin() {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // The intended destination the candidate was trying to reach when they
+  // were sent here to authenticate (e.g. "/candidate/apply/42" from the
+  // careers page's Apply button). Preferring router `state.from` (set by
+  // an in-app navigate()) and falling back to the `?redirect=` query
+  // param (which survives a full page refresh on this login page, unlike
+  // router state) means the exact job is never lost regardless of how
+  // the candidate got here or how many failed login attempts they make -
+  // both sources are re-read fresh on every render, so state persists
+  // across validation errors and wrong-password attempts automatically.
+  const redirectTarget = resolveSafeRedirect({
+    stateFrom: location.state?.from,
+    queryRedirect: new URLSearchParams(location.search).get('redirect'),
+    fallback: '/dashboard',
+  });
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
@@ -121,6 +110,76 @@ export default function CandidateLogin() {
   const GOOGLE_CLIENT_ID =
     import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
+  // Hidden container for the official Google button. Google's One Tap
+  // "prompt()" flow is unreliable in production (it is silently skipped
+  // by Chrome's FedCM rollout, third-party-cookie blocking, or if the
+  // user dismissed One Tap before), so we render the real Google button
+  // into an off-screen container and forward clicks from our own
+  // styled button into it. This keeps the existing UI but always opens
+  // Google's standard, reliable sign-in popup.
+  const googleButtonContainerRef = useRef(null);
+  const googleInitializedRef = useRef(false);
+
+  const handleGoogleCredential = async (response) => {
+    try {
+      if (!response?.credential) {
+        throw new Error('Google did not return a credential.');
+      }
+
+      const apiResponse = await fetch(
+        `${API_BASE_URL}/candidate-auth/google`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            credential: response.credential,
+          }),
+        }
+      );
+
+      const data = await apiResponse.json();
+
+      if (!apiResponse.ok) {
+        throw new Error(
+          data?.detail || 'Unable to sign in with Google.'
+        );
+      }
+
+      const storage = rememberMe ? localStorage : sessionStorage;
+
+      storage.setItem('candidate_token', data.access_token);
+      storage.setItem(
+        'candidate',
+        JSON.stringify(data.candidate)
+      );
+      storage.setItem(
+        'candidate_session_email',
+        data.candidate.email
+      );
+
+      const otherStorage = rememberMe
+        ? sessionStorage
+        : localStorage;
+
+      otherStorage.removeItem('candidate_token');
+      otherStorage.removeItem('candidate');
+      otherStorage.removeItem('candidate_session_email');
+
+      navigate(redirectTarget, { replace: true });
+    } catch (error) {
+      console.error('Google candidate login error:', error);
+      setErrors({
+        email:
+          error?.message ||
+          'Unable to sign in with Google. Please try again.',
+      });
+    } finally {
+      setIsGoogleLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID) {
       console.error(
@@ -129,22 +188,66 @@ export default function CandidateLogin() {
       return;
     }
 
-    if (window.google?.accounts?.id) return;
+    const initializeGoogle = () => {
+      if (
+        googleInitializedRef.current ||
+        !window.google?.accounts?.id ||
+        !googleButtonContainerRef.current
+      ) {
+        return;
+      }
+
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleGoogleCredential,
+        use_fedcm_for_prompt: true,
+      });
+
+      // Render Google's real, reliable button off-screen. We forward
+      // clicks from the visible "Continue with Google" button below.
+      googleButtonContainerRef.current.innerHTML = '';
+      window.google.accounts.id.renderButton(
+        googleButtonContainerRef.current,
+        { type: 'standard', theme: 'outline', size: 'large', width: 320 }
+      );
+
+      googleInitializedRef.current = true;
+    };
+
+    if (window.google?.accounts?.id) {
+      initializeGoogle();
+      return;
+    }
 
     const existing = document.querySelector(
       'script[src="https://accounts.google.com/gsi/client"]'
     );
 
-    if (existing) return;
+    const script =
+      existing ||
+      (() => {
+        const s = document.createElement('script');
+        s.src = 'https://accounts.google.com/gsi/client';
+        s.async = true;
+        s.defer = true;
+        document.head.appendChild(s);
+        return s;
+      })();
 
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    document.head.appendChild(script);
+    script.addEventListener('load', initializeGoogle);
+
+    // Poll as a fallback in case the script was already loaded (e.g. from
+    // index.html) before this listener was attached.
+    const pollTimer = window.setInterval(() => {
+      if (window.google?.accounts?.id) {
+        window.clearInterval(pollTimer);
+        initializeGoogle();
+      }
+    }, 150);
 
     return () => {
-      // Do not remove the global Google script because the page may remount.
+      window.clearInterval(pollTimer);
+      script.removeEventListener('load', initializeGoogle);
     };
   }, [GOOGLE_CLIENT_ID]);
 
@@ -183,33 +286,20 @@ export default function CandidateLogin() {
         }),
       });
 
-      const data = await readResponseBody(response);
+      const data = await response.json();
 
       if (!response.ok) {
         const message =
-          (typeof data?.detail === 'string' && data.detail) ||
+          data?.detail ||
           'Unable to sign in. Please check your email and password.';
 
-        if (response.status === 401) {
-          setErrors({
-            password: 'Invalid email or password.',
-          });
-        } else if (response.status === 403) {
+        if (response.status === 403) {
           setErrors({
             email: 'Please verify your email before logging in.',
           });
-        } else if (response.status === 404) {
+        } else if (response.status === 401) {
           setErrors({
-            email:
-              'Candidate login service is unavailable. Please check the local backend connection.',
-          });
-        } else if (response.status === 422) {
-          setErrors({
-            email: message,
-          });
-        } else if (response.status >= 500) {
-          setErrors({
-            email: 'Server error. Please make sure the backend is running.',
+            password: 'Invalid email or password.',
           });
         } else {
           setErrors({
@@ -217,13 +307,6 @@ export default function CandidateLogin() {
           });
         }
 
-        return;
-      }
-
-      if (!data?.access_token || !data?.candidate) {
-        setErrors({
-          email: 'Unexpected response from the server. Please try again.',
-        });
         return;
       }
 
@@ -244,15 +327,16 @@ export default function CandidateLogin() {
       otherStorage.removeItem('candidate');
       otherStorage.removeItem('candidate_session_email');
 
-      // Backend uses /dashboard for the candidate portal.
-      navigate('/dashboard', { replace: true });
+      // Preserve the exact job the candidate was applying to (see
+      // redirectTarget above) instead of always sending them to the
+      // generic dashboard.
+      navigate(redirectTarget, { replace: true });
     } catch (error) {
       console.error('Candidate login error:', error);
 
       setErrors({
-        email: isNetworkError(error)
-          ? `Unable to connect to the TalentNest backend at ${API_BASE_URL}. Please make sure the local FastAPI server is running.`
-          : 'Something went wrong while signing in. Please try again.',
+        email:
+          'Cannot connect to TalentNest backend. Make sure the FastAPI server is running on port 8000.',
       });
     } finally {
       setIsLoading(false);
@@ -269,109 +353,43 @@ export default function CandidateLogin() {
     }
 
     setErrors({});
-    setIsGoogleLoading(true);
 
-    const startGooglePrompt = () => {
-      if (!window.google?.accounts?.id) {
-        setIsGoogleLoading(false);
-        setErrors({
-          email:
-            'Google Sign-In could not load. Check your internet connection and Google Client ID.',
-        });
-        return;
+    const clickRealGoogleButton = () => {
+      const container = googleButtonContainerRef.current;
+      const target =
+        container?.querySelector('div[role="button"]') ||
+        container?.firstElementChild;
+
+      if (target) {
+        target.click();
+        return true;
       }
-
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: async (response) => {
-          try {
-            if (!response?.credential) {
-              throw new Error('Google did not return a credential.');
-            }
-
-            const apiResponse = await fetch(
-              `${API_BASE_URL}/candidate-auth/google`,
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  credential: response.credential,
-                }),
-              }
-            );
-
-            const data = await readResponseBody(apiResponse);
-
-            if (!apiResponse.ok) {
-              throw new Error(
-                (typeof data?.detail === 'string' && data.detail) ||
-                  'Unable to sign in with Google.'
-              );
-            }
-
-            const storage = rememberMe ? localStorage : sessionStorage;
-
-            storage.setItem('candidate_token', data.access_token);
-            storage.setItem(
-              'candidate',
-              JSON.stringify(data.candidate)
-            );
-            storage.setItem(
-              'candidate_session_email',
-              data.candidate.email
-            );
-
-            const otherStorage = rememberMe
-              ? sessionStorage
-              : localStorage;
-
-            otherStorage.removeItem('candidate_token');
-            otherStorage.removeItem('candidate');
-            otherStorage.removeItem('candidate_session_email');
-
-            navigate('/dashboard', { replace: true });
-          } catch (error) {
-            console.error('Google candidate login error:', error);
-            setErrors({
-              email:
-                error?.message ||
-                'Unable to sign in with Google. Please try again.',
-            });
-          } finally {
-            setIsGoogleLoading(false);
-          }
-        },
-      });
-
-      window.google.accounts.id.prompt((notification) => {
-        if (
-          notification.isNotDisplayed?.() ||
-          notification.isSkippedMoment?.()
-        ) {
-          setIsGoogleLoading(false);
-          setErrors({
-            email:
-              'Google sign-in could not be displayed. Please try again or use email and password.',
-          });
-        }
-      });
+      return false;
     };
 
-    if (window.google?.accounts?.id) {
-      startGooglePrompt();
+    // Fire synchronously (same call stack as the user's click) so the
+    // browser still treats the resulting Google popup as user-initiated.
+    if (clickRealGoogleButton()) {
+      setIsGoogleLoading(true);
+      // Fallback: if the popup is closed/cancelled without a credential,
+      // clear the loading state once the window regains focus.
+      const clearLoadingOnReturn = () => {
+        window.setTimeout(() => setIsGoogleLoading(false), 1500);
+        window.removeEventListener('focus', clearLoadingOnReturn);
+      };
+      window.addEventListener('focus', clearLoadingOnReturn);
       return;
     }
 
-    // Give the GIS script a short time to initialize.
+    // Google's button has not rendered yet (script still loading) -
+    // wait briefly for it, then retry.
+    setIsGoogleLoading(true);
     let attempts = 0;
     const timer = window.setInterval(() => {
       attempts += 1;
 
-      if (window.google?.accounts?.id) {
+      if (clickRealGoogleButton()) {
         window.clearInterval(timer);
-        startGooglePrompt();
       } else if (attempts >= 40) {
         window.clearInterval(timer);
         setIsGoogleLoading(false);
@@ -381,8 +399,6 @@ export default function CandidateLogin() {
         });
       }
     }, 100);
-
-    return () => window.clearInterval(timer);
   };
 
 
@@ -421,12 +437,9 @@ export default function CandidateLogin() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail.trim() }),
       });
-      const data = await readResponseBody(response);
+      const data = await response.json();
       if (!response.ok) {
-        throw new Error(
-          (typeof data?.detail === 'string' && data.detail) ||
-            'Unable to send the reset code.'
-        );
+        throw new Error(data?.detail || 'Unable to send the reset code.');
       }
       setForgotStep(2);
       setForgotSuccess('A password reset code has been sent to your email.');
@@ -455,12 +468,9 @@ export default function CandidateLogin() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail.trim(), otp: resetOtp.trim() }),
       });
-      const data = await readResponseBody(response);
+      const data = await response.json();
       if (!response.ok) {
-        throw new Error(
-          (typeof data?.detail === 'string' && data.detail) ||
-            'Invalid or expired reset code.'
-        );
+        throw new Error(data?.detail || 'Invalid or expired reset code.');
       }
       setForgotStep(3);
       setForgotSuccess('Code verified. Create your new password.');
@@ -493,12 +503,9 @@ export default function CandidateLogin() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail.trim(), new_password: newPassword }),
       });
-      const data = await readResponseBody(response);
+      const data = await response.json();
       if (!response.ok) {
-        throw new Error(
-          (typeof data?.detail === 'string' && data.detail) ||
-            'Unable to reset your password.'
-        );
+        throw new Error(data?.detail || 'Unable to reset your password.');
       }
       setForgotStep(4);
       setForgotSuccess(data?.message || 'Your password has been reset successfully.');
@@ -788,6 +795,23 @@ export default function CandidateLogin() {
                       </>
                     )}
                   </button>
+
+                  {/* Off-screen container for Google's official button.
+                      handleGoogleSignIn forwards clicks here so the real,
+                      reliable Google popup opens instead of the flaky
+                      One Tap prompt. Not visible to the user. */}
+                  <div
+                    ref={googleButtonContainerRef}
+                    aria-hidden="true"
+                    style={{
+                      position: 'absolute',
+                      top: '-9999px',
+                      left: '-9999px',
+                      width: '320px',
+                      height: '44px',
+                      overflow: 'hidden',
+                    }}
+                  />
                 </div>
 
               </form>

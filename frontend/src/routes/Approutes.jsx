@@ -1,25 +1,34 @@
 import { Routes, Route } from "react-router-dom";
 
 // ==================== PUBLIC PAGES ====================
-import Contact from "../pages/public/Contact";
-import Home from "../pages/public/Home";
-import Careers from "../pages/public/Careers";
-import About from "../pages/public/About";
-import PrivacyPolicy from "../pages/public/PrivacyPolicy";
+import Contact from "../pages/public/Contact.jsx";
+import Home from "../pages/public/Home.jsx";
+import Careers from "../pages/public/Careers.jsx";
+import About from "../pages/public/About.jsx";
+import PrivacyPolicy from "../pages/public/PrivacyPolicy.jsx";
+import Plans from "../pages/public/Plans.jsx";
+import Checkout from "../pages/public/Checkout.jsx";
+import PaymentSuccess from "../pages/public/PaymentSuccess.jsx";
+import PaymentFailed from "../pages/public/PaymentFailed.jsx";
+import PaymentCancelled from "../pages/public/PaymentCancelled.jsx";
 
 // ==================== AUTHENTICATION ====================
-import HRLogin from "../pages/auth/HRLogin";
-import CandidateLogin from "../pages/auth/CandidateLogin";
-import CandidateRegister from "../pages/auth/CandidateRegister";
+import HRLogin from "../pages/auth/HRlogin.jsx";
+import CandidateLogin from "../pages/auth/CandidateLogin.jsx";
+import CandidateRegister from "../pages/auth/CandidateRegister.jsx";
 
 // ==================== HR PORTAL ====================
-import HRDashboard from "../pages/hr/HRDashboard";
-import Jobs from "../pages/hr/Jobs";
-import Applications from "../pages/hr/Applications";
-import Candidates from "../pages/hr/Candidates";
-import Aianalysis from "../pages/hr/Aianalysis";
-import AIRankings from "../pages/hr/AIRankings";
+import HRDashboard from "../pages/hr/HRDashboard.jsx";
+import Jobs from "../pages/hr/Jobs.jsx";
+import Applications from "../pages/hr/Applications.jsx";
+import Candidates from "../pages/hr/Candidates.jsx";
+import Aianalysis from "../pages/hr/Aianalysis.jsx";
+import AIRankings from "../pages/hr/AIRankings.jsx";
 
+// IMPORTANT:
+// Subscription.jsx is actually inside:
+// src/pages/public/billing/Subscription.jsx
+import Subscription from "../pages/public/billing/Subscription.jsx";
 // ==================== CANDIDATE PORTAL ====================
 import CandidateDashboard from "../pages/candidate/CandidateDashboard.jsx";
 import BrowseJobs from "../pages/candidate/BrowseJobs.jsx";
@@ -41,6 +50,15 @@ export default function AppRoutes() {
       <Route path="/about" element={<About />} />
       <Route path="/contact" element={<Contact />} />
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+
+      {/* ==================== SUBSCRIPTION & BILLING ==================== */}
+
+      <Route path="/plans" element={<Plans />} />
+      <Route path="/checkout" element={<Checkout />} />
+      <Route path="/payment-success" element={<PaymentSuccess />} />
+      <Route path="/payment-failed" element={<PaymentFailed />} />
+      <Route path="/payment-cancelled" element={<PaymentCancelled />} />
+      <Route path="/subscription" element={<Subscription />} />
 
       {/* ==================== AUTHENTICATION ==================== */}
 
@@ -106,21 +124,31 @@ export default function AppRoutes() {
         path="/candidate/my-applications"
         element={<MyApplications />}
       />
-     {/* ==================== AI RESUME ANALYSIS ==================== */}
+
+      {/* ==================== AI RESUME ANALYSIS ==================== */}
 
       <Route
         path="/candidate/ai-analysis"
         element={<AIAnalysis />}
       />
-<Route
-  path="/candidate/profile"
-  element={<Profile />}
-/>
-<Route
-  path="/request-hr-access"
-  element={<RequestHRAccess />}
-/>
-<Route path="/candidate/apply/:jobId" element={<ApplyJob />} />
+
+      {/* Candidate Profile */}
+      <Route
+        path="/candidate/profile"
+        element={<Profile />}
+      />
+
+      {/* Request HR Access */}
+      <Route
+        path="/request-hr-access"
+        element={<RequestHRAccess />}
+      />
+
+      {/* Apply for Job */}
+      <Route
+        path="/candidate/apply/:jobId"
+        element={<ApplyJob />}
+      />
 
     </Routes>
   );

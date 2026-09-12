@@ -13,6 +13,7 @@ dependencies = [
     "passlib",
     "bcrypt",
     "python-multipart",
+    "requests",
     "email-validator",
     "google-generativeai",
     "pypdf",

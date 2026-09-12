@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { getJobs, searchJobs } from '../../services/jobService';
+import { isSafeInternalRedirect } from '../../utilis/safeRedirect';
 import {
   Search,
   MapPin,
@@ -29,7 +30,6 @@ import {
   SearchX
 } from 'lucide-react';
 import { subscribeNewsletter } from "../../services/newsletterService";
-import { buildLoginRedirectUrl } from "../../utilis/redirect";
 
 // Shared TalentNest Brand Logo (Identical to Home Page)
 const TalentNestLogo = ({ className = "w-6 h-6" }) => (
@@ -145,6 +145,30 @@ function formatTimeAgo(dateString) {
   if (diffInDays < 30) return `${diffInDays}d ago`;
   const diffInMonths = Math.floor(diffInDays / 30);
   return `${diffInMonths}mo ago`;
+}
+
+// Deterministic, theme-consistent avatar treatment for companies without a
+// logo. Every variant is built from TalentNest's own brand colors (the same
+// #0F766E / #14B8A6 / #0D9488 teal family used for buttons, badges, and
+// borders throughout this page) using the low-opacity-background +
+// brand-colored-text + brand-colored-border pattern already used elsewhere
+// on this page (see the "Verified / Active" badge below). No unrelated
+// bright hues (no purple/rose/amber/sky/indigo). The same company name
+// always hashes to the same variant, so a given company always looks the
+// same across renders.
+const COMPANY_AVATAR_THEMES = [
+  "bg-[#0F766E]/10 text-[#0F766E] border border-[#0F766E]/20",
+  "bg-[#14B8A6]/15 text-[#0F766E] border border-[#14B8A6]/30",
+  "bg-[#0D9488]/10 text-[#0D9488] border border-[#0D9488]/25",
+  "bg-[#134E4A]/10 text-[#134E4A] border border-[#134E4A]/20",
+];
+
+function stringToColor(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return COMPANY_AVATAR_THEMES[Math.abs(hash) % COMPANY_AVATAR_THEMES.length];
 }
 
 function formatSalary(salary) {
@@ -493,24 +517,25 @@ export default function CareersPage() {
   };
 
   const handleApplyClick = (jobId) => {
-    // The exact job, identified by its database ID (never an array index
-    // or the job title - titles can repeat and ordering can change), is
-    // the one and only thing that must survive the trip through login.
-    const target = `/candidate/apply/${jobId}`;
+    // The job ID (never a title or list index) is the source of truth -
+    // it's baked directly into the destination route so it survives
+    // login, page refresh, and back/forward navigation identically.
+    const applyPath = `/candidate/apply/${jobId}`;
 
     if (!isLoggedIn) {
-      // Preserve the intended job both as a `redirect` query param (so it
-      // survives a page refresh on the login screen, a wrong-password
-      // retry, or the link being copied/shared) and as router state (for
-      // pages that already read location.state?.from).
-      navigate(buildLoginRedirectUrl('/candidate-login', target), {
-        state: { from: target },
+      // Preserve the exact job through the login flow via BOTH a query
+      // param (survives a hard refresh of the login page, since router
+      // state does not) and router state (what CandidateLogin.jsx reads
+      // first). isSafeInternalRedirect guards against this ever becoming
+      // an open redirect if the target were ever attacker-influenced.
+      const redirectTarget = isSafeInternalRedirect(applyPath) ? applyPath : '/dashboard';
+      navigate(`/candidate-login?redirect=${encodeURIComponent(redirectTarget)}`, {
+        state: { from: redirectTarget },
       });
       return;
     }
 
-    // Already authenticated - skip login entirely and open the exact job.
-    navigate(target);
+    navigate(applyPath);
   };
 
   const toggleSaveJob = (id, e) => {
@@ -875,6 +900,7 @@ const count = value;
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredJobs.map((job) => {
               const compName = job.company_name || 'Unknown Company';
+              const avatarColor = stringToColor(compName);
               const initials = getCompanyInitials(compName);
 
               return (
@@ -892,7 +918,7 @@ const count = value;
                             className="w-12 h-12 rounded-xl object-contain border border-[#E2E8F0] p-1 bg-[#FFFFFF] shadow-2xs" 
                           />
                         ) : (
-                          <div className="w-12 h-12 rounded-xl flex items-center justify-center font-bold text-sm text-[#0F766E] bg-[#14B8A6]/10 border border-[#14B8A6]/20 shadow-2xs">
+                          <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-sm shadow-2xs ${avatarColor}`}>
                             {initials}
                           </div>
                         )}
@@ -998,6 +1024,7 @@ const count = value;
         {!loading && !error && companies.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {companies.map((comp) => {
+              const avatarColor = stringToColor(comp.name);
               const initials = getCompanyInitials(comp.name);
 
               return (
@@ -1014,7 +1041,7 @@ const count = value;
                           className="w-12 h-12 rounded-xl object-contain border border-[#E2E8F0] p-1 bg-[#FFFFFF] shadow-2xs" 
                         />
                       ) : (
-                        <div className="w-12 h-12 rounded-xl flex items-center justify-center font-bold text-base text-[#0F766E] bg-[#14B8A6]/10 border border-[#14B8A6]/20 shadow-2xs">
+                        <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-base shadow-2xs ${avatarColor}`}>
                           {initials}
                         </div>
                       )}

@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import API_BASE_URL from "../../services/api";
+import PremiumFeatureLock from "../../components/hr/PremiumFeatureLock";
 import {
 LayoutDashboard,
 Briefcase,
@@ -11,6 +12,7 @@ FileCheck,
 FileText,
 BrainCircuit,
 Award,
+CreditCard,
 BarChart3,
 Settings,
 Search,
@@ -100,6 +102,7 @@ const NAV_ITEMS = [
 { label: 'Candidates', icon: Users, path: '/candidates' },
 { label: 'AI Analysis', icon: BrainCircuit, path: '/ai-analysis' },
 { label: 'AI Rankings', icon: Award, path: '/ai-rankings' },
+{ label: 'Billing', icon: CreditCard, path: '/subscription' },
 ];
 
 // Decode the JWT payload already stored on login (mirrors HRDashboard, display-only).
@@ -644,6 +647,11 @@ className="inline-flex items-center gap-2 px-4 py-2 bg-[#EF4444] hover:bg-[#DC26
 Retry
 </button>
 </div>
+) : dashboardStats?.ai_insights_locked ? (
+<PremiumFeatureLock
+  title="AI Candidate Ranking"
+  description="Upgrade to Professional or Business to rank candidates by AI match score."
+/>
 ) : rankedItems.length === 0 ? (
 <div className="bg-white p-12 rounded-[20px] border border-[#E2E8F0] shadow-sm text-center space-y-3">
 <div className="w-12 h-12 rounded-2xl bg-[#F8FAFC] border border-[#E2E8F0] flex items-center justify-center text-[#0F766E] mx-auto">

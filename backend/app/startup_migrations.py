@@ -84,3 +84,22 @@ def run_startup_migrations(engine: Engine) -> None:
                 "up manually, then restart): %s",
                 message,
             )
+
+
+def run_payment_migrations(engine: Engine) -> None:
+    """
+    Additive migration for the recurring-payments/renewal feature.
+
+    `is_renewal` distinguishes a renewal payment (extends the existing
+    subscription period) from a first-time subscribe/upgrade payment
+    (starts a fresh period) - see app.models.payment and
+    app.services.subscription_service.renew_subscription. Existing rows
+    default to false, i.e. "not a renewal", which is correct: every
+    payment that predates this feature was a first-time subscribe or an
+    upgrade.
+    """
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE payments "
+            "ADD COLUMN IF NOT EXISTS is_renewal BOOLEAN NOT NULL DEFAULT FALSE"
+        ))

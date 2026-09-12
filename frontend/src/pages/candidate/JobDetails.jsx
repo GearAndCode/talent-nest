@@ -27,6 +27,7 @@ import {
   CheckCircle2,
   ArrowLeft,
   Loader2,
+  UserSearch,
   Route,
 } from "lucide-react";
 
@@ -79,7 +80,25 @@ api.interceptors.request.use((config) => {
 
 const SESSION_KEY = "candidate_session_email";
 function getStoredCandidateEmail() {
-  return localStorage.getItem(SESSION_KEY) || "";
+  return (
+    localStorage.getItem(SESSION_KEY) ||
+    sessionStorage.getItem(SESSION_KEY) ||
+    ""
+  );
+}
+
+function getStoredCandidate() {
+  for (const storage of [localStorage, sessionStorage]) {
+    const raw = storage.getItem("candidate");
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.id) return parsed;
+    } catch {
+      // Ignore malformed stale session data.
+    }
+  }
+  return null;
 }
 
 function splitSkills(value) {
@@ -117,13 +136,21 @@ const NAV_ITEMS = [
     icon: BrainCircuit,
     path: "/candidate/ai-analysis",
   },
-  
+  {
+    label: "Application Tracker",
+    icon: Route,
+    path: "/candidate/applications",
+  },
   {
     label: "Profile",
     icon: UserCircle2,
     path: "/candidate/profile",
   },
- 
+  {
+    label: "Settings",
+    icon: Settings,
+    path: "/candidate/settings",
+  },
 ];
 /* ============================================================
    ROOT COMPONENT
@@ -146,6 +173,9 @@ export default function JobDetails() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState(null);
+  const [applySuccess, setApplySuccess] = useState(false);
 
   const isActivePath = (path) => location.pathname === path;
   const handleNav = useCallback(
@@ -188,20 +218,31 @@ export default function JobDetails() {
   useEffect(() => {
     (async () => {
       setCandidateChecked(false);
-      if (!sessionEmail) {
-        setCandidateChecked(true);
-        return;
-      }
+      setAlreadyApplied(false);
+
       try {
-        const [candidatesRes, applicationsRes] = await Promise.all([api.get("/candidates"), api.get("/applications")]);
-        const found = (candidatesRes.data || []).find((c) => c.email.toLowerCase() === sessionEmail.toLowerCase());
-        setCandidate(found || null);
-        if (found) {
-          const applied = (applicationsRes.data || []).some((a) => a.candidate_id === found.id && a.job_id === Number(jobId));
+        // Prefer the candidate object saved by the login flow.
+        let activeCandidate = getStoredCandidate();
+
+        // Fall back to the stored session email for older sessions.
+        if (!activeCandidate && sessionEmail) {
+          const candidatesRes = await api.get("/candidates");
+          activeCandidate = (candidatesRes.data || []).find(
+            (c) => String(c.email || "").toLowerCase() === sessionEmail.toLowerCase()
+          );
+        }
+
+        setCandidate(activeCandidate || null);
+
+        if (activeCandidate?.id) {
+          const applicationsRes = await api.get("/applications");
+          const applied = (applicationsRes.data || []).some(
+            (a) => Number(a.candidate_id) === Number(activeCandidate.id) && Number(a.job_id) === Number(jobId)
+          );
           setAlreadyApplied(applied);
         }
       } catch {
-        // Non-fatal — Apply Now will still surface a clear error if attempted.
+        // Keep the page usable; ApplyJob will show the real API error if needed.
       } finally {
         setCandidateChecked(true);
       }
@@ -209,7 +250,19 @@ export default function JobDetails() {
   }, [sessionEmail, jobId]);
 
   const handleApply = () => {
-    // Always open the dedicated Apply Now page for this exact job.
+    // The job-details page should only choose the next step.
+    // Actual application submission happens on the dedicated ApplyJob page.
+    if (!candidate) {
+      // CandidateLogin.jsx reads location.state.from (and a ?redirect=
+      // query param as a refresh-safe fallback) - both must point at
+      // this exact job so login returns here, not the dashboard.
+      const applyPath = `/candidate/apply/${jobId}`;
+      navigate(`/candidate-login?redirect=${encodeURIComponent(applyPath)}`, {
+        state: { from: applyPath },
+      });
+      return;
+    }
+
     navigate(`/candidate/apply/${jobId}`);
   };
 
@@ -302,8 +355,29 @@ export default function JobDetails() {
                   )}
 
                   <div className="mt-6 pt-6 border-t border-[#E2E8F0]">
-{!candidateChecked ? (
+                    {applySuccess && (
+                      <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-xl bg-[#0F766E]/10 text-[#0F766E] text-sm font-medium">
+                        <CheckCircle2 className="w-4 h-4" />
+                        Application submitted successfully.
+                      </div>
+                    )}
+                    {applyError && (
+                      <div className="mb-4 flex items-center gap-2 px-4 py-3 rounded-xl bg-[#EF4444]/10 text-[#EF4444] text-sm font-medium">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        {applyError}
+                      </div>
+                    )}
+
+                    {!candidateChecked ? (
                       <div className="h-12 w-40 rounded-xl bg-[#F8FAFC] animate-pulse" />
+                    ) : !candidate ? (
+                      <button
+                        onClick={handleApply}
+                        className="inline-flex items-center gap-2 px-6 py-3.5 text-sm font-semibold text-[#FFFFFF] bg-[#0F766E] hover:bg-[#0D9488] rounded-xl shadow-sm transition-all duration-200"
+                      >
+                        <UserSearch className="w-4 h-4" />
+                        Select Your Profile to Apply
+                      </button>
                     ) : alreadyApplied ? (
                       <button
                         disabled
@@ -315,10 +389,11 @@ export default function JobDetails() {
                     ) : (
                       <button
                         onClick={handleApply}
-                        className="inline-flex items-center gap-2 px-6 py-3.5 text-sm font-semibold text-[#FFFFFF] bg-[#0F766E] hover:bg-[#0D9488] rounded-xl shadow-sm transition-all duration-200"
+                        disabled={applying}
+                        className="inline-flex items-center gap-2 px-6 py-3.5 text-sm font-semibold text-[#FFFFFF] bg-[#0F766E] hover:bg-[#0D9488] rounded-xl shadow-sm transition-all duration-200 disabled:opacity-70"
                       >
-                        <ChevronRight className="w-4 h-4" />
-                        Apply Now
+                        {applying ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                        {applying ? "Submitting..." : "Apply Now"}
                       </button>
                     )}
                   </div>
@@ -422,7 +497,12 @@ function SidebarInner({ collapsed, setCollapsed, isActivePath, handleNav, onLogo
         </nav>
       </div>
 
-      
+      <div className="p-3 border-t border-[#E2E8F0]">
+        <button onClick={onLogout} className="w-full flex items-center space-x-3 px-3.5 py-3 rounded-xl text-[#475569] hover:text-[#EF4444] hover:bg-[#EF4444]/5 font-medium transition-colors duration-200">
+          <LogOut size={20} className="shrink-0" />
+          {(!collapsed || isMobile) && <span className="text-sm tracking-wide">Logout</span>}
+        </button>
+      </div>
     </div>
   );
 }
@@ -497,16 +577,22 @@ function TopNavbar({ candidate, searchQuery, setSearchQuery, onMenuClick, onLogo
             {candidate && (
               <div className="hidden sm:flex items-center gap-3 pl-3 border-l border-[#E2E8F0]">
                 <div className="text-right leading-tight">
-                  <p className="text-sm font-semibold text-[#0F172A]">{candidate.full_name}</p>
+                  <p className="text-sm font-semibold text-[#0F172A]">{candidate.full_name || candidate.name || candidate.email || "Candidate"}</p>
                   <p className="text-xs text-[#475569]">Candidate</p>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] flex items-center justify-center text-[#0F766E] font-bold">
-                  {candidate.full_name.charAt(0).toUpperCase()}
+                  {(candidate.full_name || candidate.name || candidate.email || "C").charAt(0).toUpperCase()}
                 </div>
               </div>
             )}
 
-            
+            <button
+              onClick={onLogout}
+              className="hidden sm:inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-[#0F766E] bg-[#FFFFFF] border border-[#E2E8F0] hover:border-[#14B8A6] hover:bg-[#F8FAFC] rounded-xl shadow-2xs transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#0F766E]"
+            >
+              <LogOut className="w-4 h-4" />
+              Switch Profile
+            </button>
           </div>
         </div>
       </div>

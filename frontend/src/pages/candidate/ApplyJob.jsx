@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
 import { ArrowLeft, CheckCircle2, Loader2, AlertTriangle, Briefcase, Mail, User } from "lucide-react";
+import { getPlanLimitInfo } from "../../services/subscriptionService";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 const api = axios.create({ baseURL: API_BASE_URL, headers: { "Content-Type": "application/json" } });
@@ -12,7 +13,9 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-const SESSION_KEY = "candidate_session_email";
+function getCandidateToken() {
+  return localStorage.getItem("candidate_token") || sessionStorage.getItem("candidate_token") || null;
+}
 
 function getCandidateFromStorage() {
   for (const storage of [localStorage, sessionStorage]) {
@@ -26,6 +29,14 @@ function getCandidateFromStorage() {
   return null;
 }
 
+function clearCandidateSession() {
+  for (const storage of [localStorage, sessionStorage]) {
+    storage.removeItem("candidate_token");
+    storage.removeItem("candidate");
+    storage.removeItem("candidate_session_email");
+  }
+}
+
 export default function ApplyJob() {
   const navigate = useNavigate();
   const { jobId } = useParams();
@@ -36,34 +47,54 @@ export default function ApplyJob() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
+  const goToLogin = () => {
+    clearCandidateSession();
+    const applyPath = `/candidate/apply/${jobId}`;
+    // Query param (survives a refresh of the login page) + router state
+    // (what CandidateLogin.jsx reads first) - same pattern used by
+    // Careers.jsx and JobDetails.jsx so the exact job is never lost.
+    navigate(`/candidate-login?redirect=${encodeURIComponent(applyPath)}`, {
+      state: { from: applyPath },
+    });
+  };
+
   useEffect(() => {
     (async () => {
-      try {
-        const jobRes = await api.get(`/jobs/${jobId}`);
-        setJob(jobRes.data);
+      // No token at all - send the candidate straight to login instead of
+      // letting the page load and fail on submit.
+      if (!getCandidateToken()) {
+        goToLogin();
+        return;
+      }
 
-        let active = getCandidateFromStorage();
-        if (!active) {
-          const email = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY);
-          if (email) {
-            const candidatesRes = await api.get("/candidates");
-            active = (candidatesRes.data || []).find(
-              (c) => String(c.email || "").toLowerCase() === email.toLowerCase()
-            );
-          }
-        }
-        setCandidate(active || null);
+      try {
+        const [jobRes, meRes] = await Promise.all([
+          api.get(`/jobs/${jobId}`),
+          api.get("/candidates/me"), // Authoritative identity, sourced from the JWT - not the browser cache.
+        ]);
+        setJob(jobRes.data);
+        setCandidate(meRes.data);
       } catch (err) {
-        setError(err?.response?.data?.detail || "Unable to load the job/application details.");
+        const status = err?.response?.status;
+        if (status === 401) {
+          goToLogin();
+          return;
+        }
+        if (status === 404) {
+          setError("This job could not be found. It may have been closed or removed.");
+        } else {
+          setError(err?.response?.data?.detail || "Unable to load the job/application details.");
+        }
       } finally {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
   const submitApplication = async () => {
-    if (!candidate?.id) {
-      navigate("/candidate-login", { state: { returnTo: `/candidate/apply/${jobId}` } });
+    if (!getCandidateToken()) {
+      goToLogin();
       return;
     }
 
@@ -71,16 +102,41 @@ export default function ApplyJob() {
     setError("");
     try {
       await api.post("/applications/", {
-        candidate_id: Number(candidate.id),
+        candidate_id: Number(candidate?.id),
         job_id: Number(jobId),
       });
       setSuccess(true);
     } catch (err) {
+      const status = err?.response?.status;
       const detail = err?.response?.data?.detail;
+
+      // A 402 here means the job has hit the employer plan's per-job
+      // application limit (see enforce_application_limit in
+      // backend/app/auth/plan_access.py) - not a genuine failure, and
+      // not something the candidate can "upgrade" (it's the employer's
+      // plan). `detail` is a structured object in this case, not a
+      // string, so it must be unwrapped before being rendered - passing
+      // the raw object into setError would crash the JSX below.
+      const limitInfo = getPlanLimitInfo(err);
+
       if (detail === "Already applied.") {
         setSuccess(true);
+      } else if (status === 401) {
+        goToLogin();
+      } else if (status === 404) {
+        setError("Job not found.");
+      } else if (limitInfo) {
+        setError(limitInfo.message);
+      } else if (status === 503) {
+        setError(typeof detail === "string" ? detail : "Server error. Please try again.");
+      } else if (status === 500) {
+        setError("Server error. Please try again.");
       } else {
-        setError(detail || "We could not submit your application. Please try again.");
+        setError(
+          typeof detail === "string"
+            ? detail
+            : "We could not submit your application. Please try again."
+        );
       }
     } finally {
       setSubmitting(false);

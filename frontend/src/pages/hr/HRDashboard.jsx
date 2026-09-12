@@ -22,6 +22,7 @@ import {
   Users,
   BrainCircuit,
   Award,
+  CreditCard,
   BarChart3,
   Building2,
   Settings,
@@ -40,6 +41,7 @@ import {
   RefreshCw,
   ArrowUpRight,
   PieChart as PieChartIcon,
+  Lock,
 } from "lucide-react";
 
 /* ============================================================
@@ -173,6 +175,7 @@ const NAV_ITEMS = [
   { label: "Candidates", icon: Users, path: "/candidates" },
   { label: "AI Analysis", icon: BrainCircuit, path: "/ai-analysis" },
   { label: "AI Rankings", icon: Award, path: "/ai-rankings" },
+  { label: "Billing", icon: CreditCard, path: "/subscription" },
 
 ];
 
@@ -802,6 +805,7 @@ function TopNavbar({ hrIdentity, searchQuery, setSearchQuery, onMenuClick, onLog
    STAT CARDS
    ============================================================ */
 function StatCardsSection({ stats, loading, error, onRetry, pendingCount, acceptedCount, rejectedCount, hasApplications }) {
+  const navigate = useNavigate();
   if (loading) {
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
@@ -838,20 +842,51 @@ function StatCardsSection({ stats, loading, error, onRetry, pendingCount, accept
       icon: X,
       hint: !hasApplications ? "No data available yet" : null,
     },
-    { label: "Avg. Match Score", value: stats?.average_match_score ?? 0, icon: BrainCircuit, suffix: "%" },
+    {
+      label: "Avg. Match Score",
+      value: stats?.average_match_score ?? 0,
+      icon: BrainCircuit,
+      suffix: "%",
+      // The backend omits this figure entirely (null + ai_insights_locked)
+      // for plans without AI resume analysis + ranking, instead of a fake
+      // 0. Show an upgrade prompt rather than treating null as zero.
+      locked: !!stats?.ai_insights_locked,
+    },
     { label: "Open Positions", value: stats?.jobs ?? 0, icon: Building2 },
   ];
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
       {cards.map((card, idx) => (
-        <StatCard key={card.label} {...card} delay={idx * 0.04} />
+        <StatCard key={card.label} {...card} onUpgrade={() => navigate("/plans")} delay={idx * 0.04} />
       ))}
     </div>
   );
 }
 
-function StatCard({ label, value, icon: Icon, suffix = "", hint, delay = 0 }) {
+function StatCard({ label, value, icon: Icon, suffix = "", hint, locked = false, onUpgrade, delay = 0 }) {
+  if (locked) {
+    return (
+      <motion.button
+        type="button"
+        onClick={onUpgrade}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay }}
+        whileHover={{ y: -3 }}
+        className="group text-left bg-[#FFFFFF] p-5 rounded-[20px] border border-dashed border-[#CBD5E1] shadow-sm hover:shadow-md hover:border-[#0F766E]/40 transition-all duration-300"
+      >
+        <div className="flex items-start justify-between">
+          <div className="p-2.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-[#94A3B8] group-hover:text-[#0F766E] transition-colors duration-300">
+            <Lock className="w-5 h-5" />
+          </div>
+        </div>
+        <p className="mt-4 text-sm font-semibold text-[#0F766E]">Upgrade to unlock</p>
+        <p className="mt-1 text-xs sm:text-sm font-medium text-[#475569]">{label}</p>
+      </motion.button>
+    );
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}

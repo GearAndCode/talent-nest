@@ -3,12 +3,14 @@ import axios from 'axios';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast, { Toaster } from 'react-hot-toast';
+import useEntitlements from '../../hooks/useEntitlements';
+import PremiumFeatureLock from '../../components/hr/PremiumFeatureLock';
 import {
   Search, RefreshCw, Eye, Ban, FileText, X, ChevronDown, ChevronRight, ChevronLeft,
-  AlertTriangle, Briefcase, Users, Award, BarChart3, Settings, LogOut, Bell,
+  AlertTriangle, Briefcase, Users, Award, CreditCard, BarChart3, Settings, LogOut, Bell,
   Menu, UserCircle, BrainCircuit, LayoutDashboard, Building2, Mail, Phone,
   Calendar, GraduationCap, TrendingUp, CalendarClock, FileWarning,
-  CheckCircle2, Circle, ArrowUpDown, Download, ClipboardList,
+  CheckCircle2, Circle, ArrowUpDown, Download, ClipboardList, Lock,
 } from 'lucide-react';
 
 /* ============================================================
@@ -110,6 +112,7 @@ const NAV_ITEMS = [
   { label: 'Candidates', icon: Users, path: '/candidates' },
   { label: 'AI Analysis', icon: BrainCircuit, path: '/ai-analysis' },
   { label: 'AI Rankings', icon: Award, path: '/ai-rankings' },
+  { label: 'Billing', icon: CreditCard, path: '/subscription' },
 ,
 ];
 
@@ -489,6 +492,7 @@ function TopNavbar({ hrIdentity, searchQuery, setSearchQuery, onMenuClick, onLog
    APPLICATIONS CONTENT — the actual page
    ============================================================ */
 function ApplicationsContent() {
+  const { hasFeature } = useEntitlements();
   const [applications, setApplications] = useState([]);
   const [candidates, setCandidates] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -791,6 +795,7 @@ function ApplicationsContent() {
           onStatusChange={updateStatus}
           onReject={setRejectingApp}
           onOpenResume={handleOpenResume}
+          hasRanking={hasFeature('ai_candidate_ranking_enabled')}
         />
       )}
 
@@ -807,6 +812,10 @@ function ApplicationsContent() {
               setRejectingApp(app);
             }}
             onOpenResume={handleOpenResume}
+            hasRanking={hasFeature('ai_candidate_ranking_enabled')}
+            hasResumeAnalysis={hasFeature('ai_resume_analysis_enabled')}
+            hasInterviewQuestions={hasFeature('ai_interview_questions_enabled')}
+            hasRecommendations={hasFeature('ai_recommendations_enabled')}
           />
         )}
       </AnimatePresence>
@@ -861,7 +870,7 @@ function FilterSelect({ value, onChange, options, placeholder, raw, icon: Icon }
 /* ============================================================
    APPLICATIONS TABLE
    ============================================================ */
-function ApplicationsTable({ applications, updatingId, onView, onStatusChange, onReject, onOpenResume }) {
+function ApplicationsTable({ applications, updatingId, onView, onStatusChange, onReject, onOpenResume, hasRanking }) {
   return (
     <div className="bg-white rounded-3xl border border-[#E2E8F0] shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
@@ -904,7 +913,9 @@ function ApplicationsTable({ applications, updatingId, onView, onStatusChange, o
                   {app.applied_at ? new Date(app.applied_at).toLocaleDateString() : '—'}
                 </td>
                 <td className="px-6 py-4">
-                  {typeof app.match_score === 'number' ? (
+                  {!hasRanking ? (
+                    <LockedBadge />
+                  ) : typeof app.match_score === 'number' ? (
                     <span className="font-bold" style={{ color: matchScoreColor(app.match_score) }}>
                       {app.match_score}%
                     </span>
@@ -945,6 +956,21 @@ function ApplicationsTable({ applications, updatingId, onView, onStatusChange, o
         </table>
       </div>
     </div>
+  );
+}
+
+// Small inline "Upgrade" affordance used in place of a masked/locked AI
+// value (e.g. match score) inside table cells. Always routes to Plans.
+function LockedBadge({ label = "Upgrade" }) {
+  const navigate = useNavigate();
+  return (
+    <button
+      onClick={() => navigate('/plans')}
+      className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F766E] bg-[#0F766E]/10 hover:bg-[#0F766E]/20 px-2 py-1 rounded-full transition-colors"
+      title="Upgrade to unlock AI match scores"
+    >
+      <Lock size={11} /> {label}
+    </button>
   );
 }
 
@@ -998,7 +1024,7 @@ function StatusSelect({ value, onChange, disabled }) {
 /* ============================================================
    VIEW DRAWER
    ============================================================ */
-function ApplicationDrawer({ application, updatingId, onClose, onStatusChange, onReject, onOpenResume }) {
+function ApplicationDrawer({ application, updatingId, onClose, onStatusChange, onReject, onOpenResume, hasRanking, hasResumeAnalysis, hasInterviewQuestions, hasRecommendations }) {
   const app = application;
   const candidate = app.candidate;
   const job = app.job;
@@ -1047,7 +1073,9 @@ function ApplicationDrawer({ application, updatingId, onClose, onStatusChange, o
             </div>
             <div className="bg-[#F8FAFC] rounded-2xl border border-[#E2E8F0] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-[#475569] mb-2">AI Match Score</p>
-              {typeof app.match_score === 'number' ? (
+              {!hasRanking ? (
+                <LockedBadge label="Upgrade to unlock" />
+              ) : typeof app.match_score === 'number' ? (
                 <div>
                   <span className="text-2xl font-bold" style={{ color: matchScoreColor(app.match_score) }}>
                     {app.match_score}%
@@ -1099,7 +1127,14 @@ function ApplicationDrawer({ application, updatingId, onClose, onStatusChange, o
           </Section>
 
           {/* AI Analysis */}
-          {(matchedSkills.length > 0 || missingSkills.length > 0 || app.ai_recommendation || app.ai_summary) && (
+          {!hasResumeAnalysis ? (
+            <Section title="AI Analysis">
+              <PremiumFeatureLock
+                title="AI Resume Analysis"
+                description="Upgrade to Professional or Business to see matched/missing skills, AI recommendations, and suggested interview questions for this candidate."
+              />
+            </Section>
+          ) : (matchedSkills.length > 0 || missingSkills.length > 0 || app.ai_recommendation || app.ai_summary) && (
             <Section title="AI Analysis">
               {app.ai_summary && <p className="text-sm text-[#475569] leading-relaxed">{app.ai_summary}</p>}
 

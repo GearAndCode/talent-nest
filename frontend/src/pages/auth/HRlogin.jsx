@@ -108,6 +108,15 @@ export default function HRLogin() {
     // Success message
     alert("Login Successful!");
 
+    // If the user picked a plan on /plans before logging in, send them
+    // straight back into checkout instead of the dashboard.
+    const pendingPlan = localStorage.getItem("tn_pending_checkout_plan");
+    if (pendingPlan) {
+      localStorage.removeItem("tn_pending_checkout_plan");
+      navigate(`/checkout?plan=${pendingPlan}`);
+      return;
+    }
+
     // Redirect
     navigate("/hr-dashboard");
   } catch (error) {

@@ -42,3 +42,10 @@ class Company(Base):
         back_populates="company",
         cascade="all, delete-orphan"
     )
+
+    subscription = relationship(
+        "Subscription",
+        back_populates="company",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )

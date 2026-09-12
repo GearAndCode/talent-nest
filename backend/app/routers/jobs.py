@@ -1,24 +1,20 @@
 import json
-import logging
-import time
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from fastapi.security import OAuth2PasswordBearer
 
-from app.database import SessionLocal, get_db
+from app.database import get_db
 from app.models.job import Job
 from app.models.company import Company
 from app.models.subscriber import Subscriber
-from app.schemas.job import JobCreate, JobProcessingStatus, JobResponse
-from app.services.job_processing import process_job_background
+from app.schemas.job import JobCreate, JobResponse
+from app.services.embedding_service import get_embedding
 from app.services.email_service import send_new_job_alerts
-from app.utils.hashing import content_hash
 from app.auth.oauth2 import get_current_company
-
-logger = logging.getLogger("talentnest.routers.jobs")
+from app.auth.plan_access import enforce_active_job_limit
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -60,44 +56,7 @@ def _job_response(job: Job) -> dict:
         "experience": job.experience,
         "skills": job.skills,
         "created_at": job.created_at,
-        "status": job.status,
-        "processing_status": job.processing_status,
     }
-
-
-def _send_job_alerts_background(job_id: int) -> None:
-    """Send new-job alert emails to subscribers. Runs in the background,
-    with its own DB session, well after the HTTP response has already
-    gone back to the HR user - SMTP round-trips (up to 30s each,
-    multiplied by every subscriber) must never sit on the request path.
-    """
-    db = SessionLocal()
-    try:
-        job = (
-            db.query(Job)
-            .options(joinedload(Job.company))
-            .filter(Job.id == job_id)
-            .first()
-        )
-        if not job:
-            return
-
-        subscribers = db.query(Subscriber).all()
-
-        logger.info(
-            "job_alerts start job_id=%s subscribers=%d", job_id, len(subscribers)
-        )
-
-        sent_count = send_new_job_alerts(subscribers, job, job.company)
-
-        logger.info(
-            "job_alerts done job_id=%s sent=%d/%d",
-            job_id, sent_count, len(subscribers),
-        )
-    except Exception as exc:
-        logger.error("job_alerts FAILED job_id=%s error=%s", job_id, exc)
-    finally:
-        db.close()
 
 
 def _company_scope_query(query, token: Optional[str], db: Session):
@@ -133,25 +92,23 @@ def _company_scope_query(query, token: Optional[str], db: Session):
 @router.post("/create", response_model=JobResponse)
 def create_job(
     job: JobCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     company=Depends(get_current_company),
 ):
-    """Create + publish a job.
+    # Enforce the company's plan limit on active jobs BEFORE doing any
+    # expensive work (embeddings) or writing to the database. This is a
+    # server-side check - it cannot be bypassed by calling this endpoint
+    # directly, regardless of what the frontend shows.
+    enforce_active_job_limit(db, company)
 
-    Synchronous work here is intentionally limited to validation and the
-    database write. AI embedding generation and job-alert emails are both
-    slow, optional, and NOT required to create a job - they are scheduled
-    as background tasks and run only after this response has already been
-    sent back to the HR user.
-    """
-    request_start = time.perf_counter()
-
-    # ------------------------------------------------------------------
-    # Create + commit the job immediately. No AI/embedding work happens
-    # before this point.
-    # ------------------------------------------------------------------
-    db_start = time.perf_counter()
+    try:
+        embedding = get_embedding(job.description)
+    except Exception as exc:
+        print(f"EMBEDDING GENERATION FAILED on job create: {type(exc).__name__}: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not generate the job embedding right now. Please try creating the job again.",
+        )
 
     new_job = Job(
         company_id=company.id,
@@ -164,19 +121,14 @@ def create_job(
         employment_type=job.employment_type,
         experience=job.experience,
         skills=json.dumps(job.skills) if job.skills else "[]",
-        embedding=None,
-        status="ACTIVE",
-        processing_status="PENDING",
+        embedding=json.dumps(embedding),
     )
 
     db.add(new_job)
     db.commit()
     db.refresh(new_job)
 
-    db_ms = (time.perf_counter() - db_start) * 1000
-    logger.info("job_creation step=database_commit job_id=%s elapsed_ms=%.2f", new_job.id, db_ms)
-
-    # Reload with the actual company relationship for the response.
+    # Reload with the actual company relationship.
     new_job = (
         db.query(Job)
         .options(joinedload(Job.company))
@@ -184,16 +136,35 @@ def create_job(
         .first()
     )
 
-    # ------------------------------------------------------------------
-    # Everything expensive/optional happens in the background from here.
-    # Job creation is already done and committed - AI success/failure and
-    # email delivery can no longer affect it.
-    # ------------------------------------------------------------------
-    background_tasks.add_task(process_job_background, new_job.id, new_job.description)
-    background_tasks.add_task(_send_job_alerts_background, new_job.id)
+    # Send alerts only after the job has been successfully committed.
+    # Email errors are isolated so they cannot break job creation.
+    try:
+        subscribers = db.query(Subscriber).all()
 
-    total_ms = (time.perf_counter() - request_start) * 1000
-    logger.info("job_creation step=total job_id=%s elapsed_ms=%.2f", new_job.id, total_ms)
+        print("\n========================================")
+        print("       TALENTNEST JOB ALERT")
+        print("========================================")
+        print(f"Job: {new_job.title}")
+        print(
+            f"Company: "
+            f"{new_job.company.company_name if new_job.company else 'Unknown Company'}"
+        )
+        print(f"Subscribers found: {len(subscribers)}")
+
+        sent_count = send_new_job_alerts(
+            subscribers,
+            new_job,
+            new_job.company,
+        )
+
+        print(f"Emails successfully sent: {sent_count}")
+        print("========================================\n")
+
+    except Exception as exc:
+        print("\n========================================")
+        print("JOB CREATED - EMAIL ALERT ERROR")
+        print(f"Error: {exc}")
+        print("========================================\n")
 
     return _job_response(new_job)
 
@@ -250,26 +221,6 @@ def search_jobs(
     return [_job_response(job) for job in jobs]
 
 
-@router.get("/{job_id}/processing-status", response_model=JobProcessingStatus)
-def get_job_processing_status(
-    job_id: int,
-    db: Session = Depends(get_db),
-):
-    """Poll this to see whether background AI enrichment for a job has
-    finished. The job itself is already created/ACTIVE regardless of what
-    this returns."""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-
-    return JobProcessingStatus(
-        job_id=job.id,
-        status=job.status,
-        processing_status=job.processing_status,
-        processing_error=job.processing_error,
-    )
-
-
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job(
     job_id: int,
@@ -296,12 +247,9 @@ def get_job(
 def update_job(
     job_id: int,
     updated_job: JobCreate,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     company=Depends(get_current_company),
 ):
-    request_start = time.perf_counter()
-
     job = db.query(Job).filter(
         Job.id == job_id,
         Job.company_id == company.id,
@@ -313,12 +261,6 @@ def update_job(
             detail="Job not found for your company.",
         )
 
-    # Only re-run AI enrichment (embedding) if the description text
-    # actually changed. Salary/location/deadline-only edits stay fast and
-    # never touch the embedding.
-    new_hash = content_hash(updated_job.description)
-    description_changed = new_hash != job.description_hash
-
     job.title = updated_job.title
     job.department = updated_job.department
     job.category = updated_job.category
@@ -329,8 +271,15 @@ def update_job(
     job.experience = updated_job.experience
     job.skills = json.dumps(updated_job.skills) if updated_job.skills else "[]"
 
-    if description_changed:
-        job.processing_status = "PENDING"
+    try:
+        job.embedding = json.dumps(get_embedding(updated_job.description))
+    except Exception as exc:
+        db.rollback()
+        print(f"EMBEDDING GENERATION FAILED on job update ({job.id}): {type(exc).__name__}: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not regenerate the job embedding right now. Please try updating the job again.",
+        )
 
     db.commit()
     db.refresh(job)
@@ -341,15 +290,6 @@ def update_job(
         .filter(Job.id == job.id)
         .first()
     )
-
-    if description_changed:
-        background_tasks.add_task(process_job_background, job.id, job.description)
-        logger.info("job_update job_id=%s description_changed=True -> reprocessing queued", job.id)
-    else:
-        logger.info("job_update job_id=%s description_changed=False -> AI reprocessing skipped", job.id)
-
-    total_ms = (time.perf_counter() - request_start) * 1000
-    logger.info("job_update step=total job_id=%s elapsed_ms=%.2f", job.id, total_ms)
 
     return _job_response(job)
 

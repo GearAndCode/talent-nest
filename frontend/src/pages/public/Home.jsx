@@ -183,6 +183,7 @@ export default function Home() {
   const navLinks = [
     { name: "Features", href: "#features", type: "scroll" },
     { name: "Solutions", href: "#solutions", type: "scroll" },
+    { name: "Plans", href: "/plans", type: "route" },
     { name: "Careers", href: "/careers", type: "route" },
     { name: "About", href: "/about", type: "route" },
     { name: "Contact", href: "/contact", type: "route" },
@@ -800,6 +801,11 @@ export default function Home() {
                 <li>
                   <Link to="/careers" className="text-[#475569] hover:text-[#0F766E] transition-colors">
                     Careers Board
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/plans" className="text-[#475569] hover:text-[#0F766E] transition-colors">
+                    Plans & Pricing
                   </Link>
                 </li>
               </ul>
